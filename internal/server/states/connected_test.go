@@ -57,3 +57,21 @@ func TestFirstVirusOnPathPicksTheNearestVirusInTheWay(t *testing.T) {
 		t.Fatal("a throw away from every virus hit one")
 	}
 }
+
+func TestAThrowLandsInsideTheFirstBlobInTheWay(t *testing.T) {
+	players := objects.NewSharedCollection[*objects.Player]()
+	players.Add(&objects.Player{X: 0, Y: 0, Radius: 60}, 1)    // the thrower
+	players.Add(&objects.Player{X: 150, Y: 10, Radius: 20}, 2) // in the way
+	players.Add(&objects.Player{X: 250, Y: 0, Radius: 40}, 3)  // further along
+
+	id, _, x, y, hit := playerOnPath(players, 1, 73, 0, 313, 0, 11)
+	if !hit || id != 2 {
+		t.Fatalf("got player %d (hit %v), want the nearer blob 2", id, hit)
+	}
+	if dx, dy := x-150, y-10; dx*dx+dy*dy > 10*10 {
+		t.Fatalf("lands at (%.0f, %.0f), want inside blob 2's middle half", x, y)
+	}
+	if _, _, _, _, hit := playerOnPath(players, 1, 73, 0, 313, 200, 11); hit {
+		t.Fatal("a throw that misses every blob was caught")
+	}
+}

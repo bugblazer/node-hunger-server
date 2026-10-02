@@ -263,9 +263,16 @@ func (g *InGame) handleFeed(senderId uint64, message *packets.Packet_Feed) {
 	toX, toY := objects.ClampToMap(fromX+dirX*feedThrowDist, fromY+dirY*feedThrowDist, feedSporeRadius)
 
 	shared := g.client.SharedGameObjects()
-	if virusId, hit := firstVirusOnPath(shared.Viruses, fromX, fromY, toX, toY, feedSporeRadius); hit {
+	virusId, virusT, hitVirus := virusOnPath(shared.Viruses, fromX, fromY, toX, toY, feedSporeRadius)
+	_, playerT, catchX, catchY, hitPlayer := playerOnPath(shared.Players, g.client.Id(), fromX, fromY, toX, toY, feedSporeRadius)
+	if hitVirus && (!hitPlayer || virusT <= playerT) {
 		shared.FeedVirus(server.VirusFeed{VirusId: virusId, Mass: sporeMass, DirX: dirX, DirY: dirY})
 		return
+	}
+	// A blob in the way catches the throw: it lands inside that blob instead of flying
+	// through it (nobody can eat a spore mid-air), so it gets eaten when it lands.
+	if hitPlayer {
+		toX, toY = catchX, catchY
 	}
 
 	spore := &objects.Spore{
@@ -287,26 +294,61 @@ func (g *InGame) handleFeed(senderId uint64, message *packets.Packet_Feed) {
 	g.client.SocketSend(packets.NewSpore(sporeId, spore))
 }
 
-// firstVirusOnPath finds the virus a throw from (fromX, fromY) to (toX, toY)
-// runs into first, if any.
-func firstVirusOnPath(viruses *objects.SharedCollection[*objects.Virus], fromX, fromY, toX, toY, radius float64) (uint64, bool) {
+// closestOnPath returns how far along a throw from (fromX, fromY) to (toX, toY)
+// it passes closest to (x, y), from 0 to 1, and how far away it is then (squared).
+func closestOnPath(fromX, fromY, toX, toY, x, y float64) (t, distSq float64) {
 	segX, segY := toX-fromX, toY-fromY
-	segLenSq := segX*segX + segY*segY
-	bestId, bestT, found := uint64(0), math.Inf(1), false
+	if segLenSq := segX*segX + segY*segY; segLenSq > 0 {
+		t = min(max(((x-fromX)*segX+(y-fromY)*segY)/segLenSq, 0), 1)
+	}
+	dx, dy := fromX+segX*t-x, fromY+segY*t-y
+	return t, dx*dx + dy*dy
+}
 
+// virusOnPath finds the virus a throw runs into first, if any, and how far along
+// the throw that happens.
+func virusOnPath(viruses *objects.SharedCollection[*objects.Virus], fromX, fromY, toX, toY, radius float64) (uint64, float64, bool) {
+	bestId, bestT, found := uint64(0), math.Inf(1), false
 	viruses.ForEach(func(id uint64, v *objects.Virus) {
-		// Closest point on the throw to the virus's centre.
-		t := 0.0
-		if segLenSq > 0 {
-			t = min(max(((v.X-fromX)*segX+(v.Y-fromY)*segY)/segLenSq, 0), 1)
-		}
-		dx, dy := fromX+segX*t-v.X, fromY+segY*t-v.Y
+		t, distSq := closestOnPath(fromX, fromY, toX, toY, v.X, v.Y)
 		reach := v.Radius + radius
-		if dx*dx+dy*dy <= reach*reach && t < bestT {
+		if distSq <= reach*reach && t < bestT {
 			bestId, bestT, found = id, t, true
 		}
 	})
-	return bestId, found
+	return bestId, bestT, found
+}
+
+func firstVirusOnPath(viruses *objects.SharedCollection[*objects.Virus], fromX, fromY, toX, toY, radius float64) (uint64, bool) {
+	id, _, found := virusOnPath(viruses, fromX, fromY, toX, toY, radius)
+	return id, found
+}
+
+// playerOnPath finds the first blob (other than the thrower) a throw passes
+// over, and a point inside that blob for the spore to land on.
+func playerOnPath(players *objects.SharedCollection[*objects.Player], throwerId uint64, fromX, fromY, toX, toY, radius float64) (uint64, float64, float64, float64, bool) {
+	bestId, bestT, found := uint64(0), math.Inf(1), false
+	var landX, landY float64
+	players.ForEach(func(id uint64, p *objects.Player) {
+		if id == throwerId {
+			return
+		}
+		t, distSq := closestOnPath(fromX, fromY, toX, toY, p.X, p.Y)
+		reach := p.Radius + radius
+		if distSq > reach*reach || t >= bestT {
+			return
+		}
+		bestId, bestT, found = id, t, true
+		// The closest point on the throw, pulled in to half the blob's radius from its
+		// centre so the spore is well inside it when it lands.
+		cx, cy := fromX+(toX-fromX)*t, fromY+(toY-fromY)*t
+		dx, dy := cx-p.X, cy-p.Y
+		if d := math.Sqrt(distSq); d > p.Radius/2 {
+			dx, dy = dx/d*p.Radius/2, dy/d*p.Radius/2
+		}
+		landX, landY = p.X+dx, p.Y+dy
+	})
+	return bestId, bestT, landX, landY, found
 }
 
 func (g *InGame) handleVirusConsumed(senderId uint64, message *packets.Packet_VirusConsumed) {
