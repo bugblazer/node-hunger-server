@@ -42,3 +42,25 @@ func TestIdsAreNotReusedAfterRemove(t *testing.T) {
 		t.Fatalf("id %d was reused after removal", a)
 	}
 }
+
+func TestClampToMapKeepsTheWholeCircleInside(t *testing.T) {
+	x, y := ClampToMap(5000, -4000, 50)
+	if x != MapHalfSize-50 || y != -(MapHalfSize-50) {
+		t.Fatalf("got (%v, %v)", x, y)
+	}
+	if x, y := ClampToMap(10, -20, 50); x != 10 || y != -20 {
+		t.Fatalf("points inside the map must not move, got (%v, %v)", x, y)
+	}
+}
+
+func TestSpawnsStayInsideTheMapEvenWhenCrowded(t *testing.T) {
+	spores := NewSharedCollection[*Spore]()
+	// A crowded map: the old code doubled its search area and spawned outside it.
+	for i := 0; i < 3000; i++ {
+		x, y := SpawnCoords(10, nil, spores)
+		if x < -MapHalfSize+10 || x > MapHalfSize-10 || y < -MapHalfSize+10 || y > MapHalfSize-10 {
+			t.Fatalf("spawned outside the map at (%v, %v)", x, y)
+		}
+		spores.Add(&Spore{X: x, Y: y, Radius: 10})
+	}
+}

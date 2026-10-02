@@ -35,9 +35,10 @@ func (g *InGame) OnEnter() {
 	go g.client.SharedGameObjects().Players.Add(g.player, g.client.Id())
 
 	// Set the initial properties of the player
-	g.player.X, g.player.Y = objects.SpawnCoords(g.player.Radius, g.client.SharedGameObjects().Players, nil)
+	// Radius first: spawning needs the real size to keep the player clear of others and the walls.
 	g.player.Speed = 150.0
 	g.player.Radius = 20.0
+	g.player.X, g.player.Y = objects.SpawnCoords(g.player.Radius, g.client.SharedGameObjects().Players, nil)
 
 	// Send the player's initial state to the client
 	g.client.SocketSend(packets.NewPlayer(g.client.Id(), g.player))
@@ -232,8 +233,8 @@ func (g *InGame) syncPlayer(delta float64) {
 	newX := g.player.X + g.player.Speed*math.Cos(g.player.Direction)*delta
 	newY := g.player.Y + g.player.Speed*math.Sin(g.player.Direction)*delta
 
-	g.player.X = newX
-	g.player.Y = newY
+	// The map has walls: a player who steers into one slides along it.
+	g.player.X, g.player.Y = objects.ClampToMap(newX, newY, g.player.Radius)
 
 	// Drop a spore
 	probability := g.player.Radius / float64(server.MaxSpores*5)

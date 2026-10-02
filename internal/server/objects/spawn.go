@@ -35,25 +35,34 @@ func isTooClose[T any](x float64, y float64, radius float64, objects *SharedColl
 	return tooClose
 }
 
-func SpawnCoords(radius float64, playersToAvoid *SharedCollection[*Player], sporesToAvoid *SharedCollection[*Spore]) (float64, float64) {
-	bound := 3000.0
-	const maxTries int = 25
+// MapHalfSize is half the width of the square map: it spans -MapHalfSize..MapHalfSize
+// on both axes. Players can't leave it, and nothing spawns outside it. The web client
+// draws the walls at the same place (MAP_HALF_SIZE in objects/map_border).
+const MapHalfSize = 3000.0
 
-	tries := 0
-	for {
-		x := bound * (2*rand.Float64() - 1)
-		y := bound * (2*rand.Float64() - 1)
+// ClampToMap keeps a circle of the given radius fully inside the map.
+func ClampToMap(x, y, radius float64) (float64, float64) {
+	limit := max(MapHalfSize-radius, 0)
+	return min(max(x, -limit), limit), min(max(y, -limit), limit)
+}
+
+// SpawnCoords picks a random point inside the map that doesn't overlap the given
+// players or spores. The old version doubled its search area whenever the map got
+// crowded, which spawned spores (and players) outside the playable map; now it
+// stays inside and, if it can't find a free spot, accepts a slightly crowded one.
+func SpawnCoords(radius float64, playersToAvoid *SharedCollection[*Player], sporesToAvoid *SharedCollection[*Spore]) (float64, float64) {
+	const maxTries = 25
+	limit := max(MapHalfSize-radius, 0)
+
+	var x, y float64
+	for range maxTries {
+		x = limit * (2*rand.Float64() - 1)
+		y = limit * (2*rand.Float64() - 1)
 
 		if !isTooClose(x, y, radius, playersToAvoid, getPlayerPosition, getPlayerRadius) &&
 			!isTooClose(x, y, radius, sporesToAvoid, getSporePosition, getSporeRadius) {
 			return x, y
 		}
-
-		tries++
-		if tries >= maxTries {
-			bound *= 2
-			tries = 0
-		}
 	}
-
+	return x, y
 }
