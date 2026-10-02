@@ -96,7 +96,7 @@ func joinGame(t *testing.T, url, name string) testConn {
 		t.Errorf("%s: no id: %v", name, err)
 		return c
 	}
-	c.send(&packets.Packet_RegisterRequest{RegisterRequest: &packets.RegisterRequestMessage{Username: name, Password: "test-password", Color: 0xff0000}})
+	c.send(&packets.Packet_RegisterRequest{RegisterRequest: &packets.RegisterRequestMessage{Username: name, Password: "test-password", Color: 0x00ff00ff}})
 	if err := c.waitOk(); err != nil {
 		t.Errorf("%s: register: %v", name, err)
 		return c
@@ -150,7 +150,7 @@ func TestTakenNameIsRefusedButTheAccountStillWorks(t *testing.T) {
 	c := dial(t, url)
 	defer c.Close()
 	c.waitId()
-	c.send(&packets.Packet_RegisterRequest{RegisterRequest: &packets.RegisterRequestMessage{Username: "taken", Password: "other-password", Color: 1}})
+	c.send(&packets.Packet_RegisterRequest{RegisterRequest: &packets.RegisterRequestMessage{Username: "taken", Password: "other-password", Color: 0x00ff00ff}})
 	if err := c.waitOk(); err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("expected 'already exists', got %v", err)
 	}

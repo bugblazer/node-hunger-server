@@ -111,6 +111,14 @@ func (c *Connected) handleRegisterRequest(senderId uint64, message *packets.Pack
 		return
 	}
 
+	// Blob colours must be bright: a dark grey blends into the map, which would let
+	// a player hide. The sign-up colour wheel only offers bright colours, but a
+	// modified client could send anything.
+	if !isVisibleColor(message.RegisterRequest.Color) {
+		c.client.SocketSend(packets.NewDenyResponse("Pick a brighter colour so other players can see you"))
+		return
+	}
+
 	if _, err := c.queries.GetUserByUsername(c.dbCtx, strings.ToLower(username)); err == nil {
 		c.logger.Printf("User already exists: %v", err)
 		c.client.SocketSend(packets.NewDenyResponse("User already exists"))
@@ -173,4 +181,21 @@ func (c *Connected) createUserAndPlayer(username, passwordHash, displayName stri
 		return err
 	}
 	return tx.Commit()
+}
+
+// isVisibleColor reports whether a blob colour (RGBA packed as 0xRRGGBBAA, as the
+// client sends it) stands out against the dark map: bright and not washed out.
+// The client's wheel offers saturation >= 0.45 at full brightness; this allows a
+// little rounding slack.
+func isVisibleColor(rgba int32) bool {
+	c := uint32(rgba)
+	r, g, b := float64(c>>24&0xff), float64(c>>16&0xff), float64(c>>8&0xff)
+	hi := max(r, g, b)
+	lo := min(r, g, b)
+	if hi == 0 {
+		return false
+	}
+	brightness := hi / 255
+	saturation := (hi - lo) / hi
+	return brightness >= 0.9 && saturation >= 0.4
 }

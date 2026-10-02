@@ -95,7 +95,7 @@ func bot(i int, stop <-chan struct{}, wg *sync.WaitGroup) {
 	if !*burst {
 		authMu.Lock()
 	}
-	send(c, &packets.Packet{Msg: &packets.Packet_RegisterRequest{RegisterRequest: &packets.RegisterRequestMessage{Username: name, Password: "loadtest-pw", Color: int32(rand.Intn(0xffffff))}}})
+	send(c, &packets.Packet{Msg: &packets.Packet_RegisterRequest{RegisterRequest: &packets.RegisterRequestMessage{Username: name, Password: "loadtest-pw", Color: brightColor()}}})
 	if err := waitFor(c, isOk); err != nil && !strings.Contains(err.Error(), "exists") && !strings.Contains(err.Error(), "taken") {
 		fmt.Println("register:", err)
 	}
@@ -202,4 +202,12 @@ func main() {
 	fmt.Printf("bots_in_game=%d msgs_per_sec_total=%.0f msgs_per_sec_per_bot=%.0f kB_per_sec_total=%.0f chat_samples=%d latency_ms p50=%.1f p95=%.1f p99=%.1f\n",
 		inGame.Load(), float64(received.Load())/secs, float64(received.Load())/secs/float64(max(inGame.Load(), 1)), float64(bytesIn.Load())/secs/1024, len(lat), pct(.5), pct(.95), pct(.99))
 	fmt.Printf("near_update_gap_ms samples=%d p50=%.0f p95=%.0f p99=%.0f\n", len(nearGaps), pctOf(nearGaps, .5), pctOf(nearGaps, .95), pctOf(nearGaps, .99))
+}
+
+// brightColor returns a random fully-bright, saturated colour packed as 0xRRGGBBAA,
+// which the server accepts (it rejects dark or grey blobs).
+func brightColor() int32 {
+	channels := []uint32{255, uint32(rand.Intn(256)), 0}
+	rand.Shuffle(len(channels), func(i, j int) { channels[i], channels[j] = channels[j], channels[i] })
+	return int32(channels[0]<<24 | channels[1]<<16 | channels[2]<<8 | 0xff)
 }
