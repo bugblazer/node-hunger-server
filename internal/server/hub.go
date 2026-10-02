@@ -18,18 +18,31 @@ import (
 
 const MaxSpores = 1000
 
+// Interest management. Every player's position goes out 20 times a second, and
+// sending all of them to everyone is 20 x n^2 messages: fine at 30 players, too
+// much at 60+. Players you can see still get every update. Players further away
+// get one in farUpdateEvery; the client keeps them moving on their last heading
+// in between, and they stay in the live leaderboard and chat.
+const (
+	minViewDistance = 1000.0 // world units; a new player sees about 576 x 324
+	viewPerRadius   = 15.0   // the camera zooms out as you grow (about 11.5 x radius half-width)
+	farUpdateEvery  = 10     // far players: 2 updates a second instead of 20
+)
+
 //go:embed db/config/schema.sql
 var schemaGenSql string
 
 type DbTx struct {
 	Ctx     context.Context
 	Queries *db.Queries
+	DB      *sql.DB // for work that must happen in one transaction
 }
 
 func (h *Hub) NewDbTx() *DbTx {
 	return &DbTx{
 		Ctx:     context.Background(),
 		Queries: db.New(h.dbPool),
+		DB:      h.dbPool,
 	}
 }
 
@@ -106,10 +119,21 @@ type Hub struct {
 	dbPool *sql.DB
 
 	SharedGameObjects *SharedGameObjects
+
+	// Per-sender count of position broadcasts, to pick which ones reach far players.
+	// Only touched by the hub goroutine, so no lock is needed.
+	playerUpdateCount map[uint64]uint64
 }
 
 func NewHub(dataDirPath string) *Hub {
-	dbPool, err := sql.Open("sqlite", path.Join(dataDirPath, "db.sqlite"))
+	// WAL lets reads continue while a write is in progress, and busy_timeout makes a
+	// writer wait for the lock instead of failing at once. Without them, a few
+	// players signing up at the same moment got "database is locked" (SQLITE_BUSY).
+	// _txlock=immediate takes the write lock when a transaction starts, so two
+	// transactions can't both read and then deadlock trying to upgrade.
+	dsn := "file:" + path.Join(dataDirPath, "db.sqlite") +
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_txlock=immediate"
+	dbPool, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		log.Fatalf("Error opening database: %v", err)
 	}
@@ -119,7 +143,8 @@ func NewHub(dataDirPath string) *Hub {
 		BroadcastChan:  make(chan *packets.Packet),
 		RegisterChan:   make(chan ClientInterfacer),
 		UnregisterChan: make(chan ClientInterfacer),
-		dbPool:         dbPool,
+		dbPool:            dbPool,
+		playerUpdateCount: make(map[uint64]uint64),
 		SharedGameObjects: &SharedGameObjects{
 			Players: objects.NewSharedCollection[*objects.Player](),
 			Spores:  objects.NewSharedCollection[*objects.Spore](),
@@ -147,14 +172,45 @@ func (h *Hub) Run() {
 			client.Initialize(h.Clients.Add(client))
 		case client := <-h.UnregisterChan:
 			h.Clients.Remove(client.Id())
+			delete(h.playerUpdateCount, client.Id())
 		case packet := <-h.BroadcastChan:
-			h.Clients.ForEach(func(clientId uint64, client ClientInterfacer) {
-				if clientId != packet.SenderId {
-					client.ProcessMessage(packet.SenderId, packet.Msg)
-				}
-			})
+			h.broadcast(packet)
 		}
 	}
+}
+
+// broadcast delivers a packet to every client except its sender. Position
+// updates (Player packets) are thinned out for players who are far away.
+func (h *Hub) broadcast(packet *packets.Packet) {
+	playerMsg, isPlayerUpdate := packet.Msg.(*packets.Packet_Player)
+	sendToFar := true
+	if isPlayerUpdate {
+		n := h.playerUpdateCount[packet.SenderId]
+		h.playerUpdateCount[packet.SenderId] = n + 1
+		sendToFar = n%farUpdateEvery == 0
+	}
+
+	h.Clients.ForEach(func(clientId uint64, client ClientInterfacer) {
+		if clientId == packet.SenderId {
+			return
+		}
+		if isPlayerUpdate && !sendToFar && !h.canSee(clientId, playerMsg.Player) {
+			return
+		}
+		client.ProcessMessage(packet.SenderId, packet.Msg)
+	})
+}
+
+// canSee reports whether the viewer's player is close enough to the given player
+// to have them on screen. Viewers who aren't in the game see everything.
+func (h *Hub) canSee(viewerId uint64, other *packets.PlayerMessage) bool {
+	viewer, inGame := h.SharedGameObjects.Players.Get(viewerId)
+	if !inGame {
+		return true
+	}
+	reach := max(minViewDistance, viewPerRadius*viewer.Radius) + other.Radius
+	dx, dy := viewer.X-other.X, viewer.Y-other.Y
+	return dx*dx+dy*dy <= reach*reach
 }
 
 func (h *Hub) Serve(getNewClient func(*Hub, http.ResponseWriter, *http.Request) (ClientInterfacer, error), writer http.ResponseWriter, request *http.Request) {

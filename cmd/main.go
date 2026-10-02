@@ -74,6 +74,16 @@ func main() {
 	cfg.DataPath = coalescePaths(cfg.DataPath, dockerMountedDataDir, ".")
 	hub := server.NewHub(cfg.DataPath)
 
+	// Cheap endpoint for uptime checks (and for waking the server on a free host).
+	// The web client pings it while the game downloads, so it needs CORS headers
+	// (the page is cross-origin isolated, which blocks opaque cross-origin requests).
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write([]byte("ok"))
+	})
+
 	// Define handler for WebSocket connections
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		hub.Serve(clients.NewWebSocketClient, w, r)

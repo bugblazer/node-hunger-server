@@ -127,25 +127,11 @@ func (c *Connected) handleRegisterRequest(senderId uint64, message *packets.Pack
 		return
 	}
 
-	user, err := c.queries.CreateUser(c.dbCtx, db.CreateUserParams{
-		Username:     strings.ToLower(username),
-		PasswordHash: string(passwordHash),
-	})
-
-	if err != nil {
-		c.logger.Printf("Failed to create user: %v", err)
-		c.client.SocketSend(genericFailMessage)
-		return
-	}
-
-	_, err = c.queries.CreatePlayer(c.dbCtx, db.CreatePlayerParams{
-		UserID: user.ID,
-		Name:   username,
-		Color:  int64(message.RegisterRequest.Color),
-	})
-
-	if err != nil {
-		c.logger.Printf("Failed to create player for user %s: %v", username, err)
+	// The user and their player row are created together or not at all. Before,
+	// a failure between the two inserts left a user with no player: that name
+	// could then neither log in nor register again.
+	if err := c.createUserAndPlayer(strings.ToLower(username), string(passwordHash), username, int64(message.RegisterRequest.Color)); err != nil {
+		c.logger.Printf("Failed to register user %s: %v", username, err)
 		c.client.SocketSend(genericFailMessage)
 		return
 	}
@@ -169,4 +155,22 @@ func validateUsername(username string) error {
 		return errors.New("leading or trailing whitespace")
 	}
 	return nil
+}
+
+func (c *Connected) createUserAndPlayer(username, passwordHash, displayName string, color int64) error {
+	tx, err := c.client.DbTx().DB.BeginTx(c.dbCtx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // no-op after Commit
+
+	q := c.queries.WithTx(tx)
+	user, err := q.CreateUser(c.dbCtx, db.CreateUserParams{Username: username, PasswordHash: passwordHash})
+	if err != nil {
+		return err
+	}
+	if _, err := q.CreatePlayer(c.dbCtx, db.CreatePlayerParams{UserID: user.ID, Name: displayName, Color: color}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
