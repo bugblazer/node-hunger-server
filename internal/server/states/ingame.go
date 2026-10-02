@@ -155,11 +155,7 @@ func (g *InGame) handlePlayerConsumed(senderId uint64, message *packets.Packet_P
 
 		if message.PlayerConsumed.PlayerId == g.client.Id() {
 			g.logger.Println("Player was consumed, respawning")
-			g.client.SetState(&InGame{
-				player: &objects.Player{
-					Name: g.player.Name,
-				},
-			})
+			g.client.SetState(&InGame{player: respawnedPlayer(g.player)})
 		}
 
 		return
@@ -341,5 +337,18 @@ func (g *InGame) syncPlayerBestScore() {
 		if err != nil {
 			g.logger.Printf("Error updating player best score: %v", err)
 		}
+	}
+}
+
+// respawnedPlayer is the fresh blob a player gets after being eaten: new position
+// and size (set in OnEnter), same identity. The respawn used to copy only the name,
+// so the colour came through as 0 (fully transparent: other players saw just a
+// floating name) and the database id was lost, so best scores stopped saving.
+func respawnedPlayer(p *objects.Player) *objects.Player {
+	return &objects.Player{
+		Name:      p.Name,
+		DbId:      p.DbId,
+		BestScore: p.BestScore,
+		Color:     p.Color,
 	}
 }
