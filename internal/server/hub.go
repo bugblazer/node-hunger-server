@@ -7,12 +7,15 @@ import (
 	"log"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
+	"os"
 	"path"
 	"server/internal/server/db"
 	"server/internal/server/objects"
 	"server/pkg/packets"
 	"time"
 
+	"github.com/tursodatabase/libsql-client-go/libsql"
 	_ "modernc.org/sqlite"
 )
 
@@ -50,6 +53,10 @@ type SharedGameObjects struct {
 	// The ID of the player is the ID of the client that owns it
 	Players *objects.SharedCollection[*objects.Player]
 	Spores  *objects.SharedCollection[*objects.Spore]
+	Viruses *objects.SharedCollection[*objects.Virus]
+
+	// W throws that hit a virus, waiting for the virus loop (see FeedVirus)
+	VirusFeeds chan VirusFeed
 }
 
 // A structure for a state machine to process the client's messages
@@ -126,14 +133,7 @@ type Hub struct {
 }
 
 func NewHub(dataDirPath string) *Hub {
-	// WAL lets reads continue while a write is in progress, and busy_timeout makes a
-	// writer wait for the lock instead of failing at once. Without them, a few
-	// players signing up at the same moment got "database is locked" (SQLITE_BUSY).
-	// _txlock=immediate takes the write lock when a transaction starts, so two
-	// transactions can't both read and then deadlock trying to upgrade.
-	dsn := "file:" + path.Join(dataDirPath, "db.sqlite") +
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_txlock=immediate"
-	dbPool, err := sql.Open("sqlite", dsn)
+	dbPool, err := openDatabase(dataDirPath)
 	if err != nil {
 		log.Fatalf("Error opening database: %v", err)
 	}
@@ -146,10 +146,42 @@ func NewHub(dataDirPath string) *Hub {
 		dbPool:            dbPool,
 		playerUpdateCount: make(map[uint64]uint64),
 		SharedGameObjects: &SharedGameObjects{
-			Players: objects.NewSharedCollection[*objects.Player](),
-			Spores:  objects.NewSharedCollection[*objects.Spore](),
+			Players:    objects.NewSharedCollection[*objects.Player](),
+			Spores:     objects.NewSharedCollection[*objects.Spore](),
+			Viruses:    objects.NewSharedCollection[*objects.Virus](),
+			VirusFeeds: make(chan VirusFeed, 64),
 		},
 	}
+}
+
+// openDatabase uses Turso when TURSO_DATABASE_URL is set (the hosted server: free
+// hosts wipe their disk on every deploy, which reset everyone's accounts), and a
+// local SQLite file otherwise. Both speak SQLite, so the queries are the same.
+func openDatabase(dataDirPath string) (*sql.DB, error) {
+	if dbUrl := os.Getenv("TURSO_DATABASE_URL"); dbUrl != "" {
+		var opts []libsql.Option
+		if token := os.Getenv("TURSO_AUTH_TOKEN"); token != "" {
+			opts = append(opts, libsql.WithAuthToken(token))
+		}
+		connector, err := libsql.NewConnector(dbUrl, opts...)
+		if err != nil {
+			return nil, err
+		}
+		if u, err := url.Parse(dbUrl); err == nil {
+			log.Printf("Using the Turso database at %s", u.Host)
+		}
+		return sql.OpenDB(connector), nil
+	}
+
+	// WAL lets reads continue while a write is in progress, and busy_timeout makes a
+	// writer wait for the lock instead of failing at once. Without them, a few
+	// players signing up at the same moment got "database is locked" (SQLITE_BUSY).
+	// _txlock=immediate takes the write lock when a transaction starts, so two
+	// transactions can't both read and then deadlock trying to upgrade.
+	dsn := "file:" + path.Join(dataDirPath, "db.sqlite") +
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_txlock=immediate"
+	log.Printf("Using the local SQLite database in %s", dataDirPath)
+	return sql.Open("sqlite", dsn)
 }
 
 func (h *Hub) Run() {
@@ -164,6 +196,10 @@ func (h *Hub) Run() {
 	}
 
 	go h.replenishSporesLoop(2 * time.Second)
+
+	log.Println("Placing viruses...")
+	h.placeViruses()
+	go h.virusLoop()
 
 	log.Println("Awaiting client registrations")
 	for {

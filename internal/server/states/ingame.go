@@ -18,7 +18,29 @@ type InGame struct {
 	player                 *objects.Player
 	logger                 *log.Logger
 	cancelPlayerUpdateLoop context.CancelFunc
+	lastFeed               time.Time
 }
+
+// W (feed) throws a small spore ahead of the blob, Agar.io style. Holding W
+// repeats; the server allows one throw per feedCooldown.
+const (
+	feedCooldown    = 90 * time.Millisecond
+	feedMinRadius   = 35.0  // too small to feed below this (a new blob is 20)
+	feedSporeRadius = 11.0  // what each throw costs and what it's worth to whoever eats it
+	feedThrowDist   = 240.0 // how far past the blob's edge it lands
+	feedOwnerLockup = time.Second
+)
+
+// A virus burst sheds this share of the blob's mass as spores around it.
+const (
+	burstMassShare   = 0.4
+	burstSporeMass   = 400.0 // aim for spores about this heavy...
+	burstMinSpores   = 8     // ...but always at least this many
+	burstMaxSpores   = 24    // and never more than this
+	burstSpreadMin   = 25.0  // how far past the blob's new edge they land
+	burstSpreadMax   = 220.0
+	burstOwnerLockup = 2 * time.Second // before the burst blob can eat its own spores back
+)
 
 func (g *InGame) Name() string {
 	return "InGame"
@@ -45,6 +67,8 @@ func (g *InGame) OnEnter() {
 
 	// Send the spores to the client in the background
 	go g.sendInitialSpores(20, 50*time.Millisecond)
+
+	g.sendInitialViruses()
 }
 
 func (g *InGame) HandleMessage(senderId uint64, message packets.Msg) {
@@ -61,8 +85,16 @@ func (g *InGame) HandleMessage(senderId uint64, message packets.Msg) {
 		g.handlePlayerConsumed(senderId, message)
 	case *packets.Packet_Spore:
 		g.handleSpore(senderId, message)
+	case *packets.Packet_SporesBatch:
+		g.client.SocketSendAs(message, senderId)
 	case *packets.Packet_Disconnect:
 		g.handleDisconnect(senderId, message)
+	case *packets.Packet_Feed:
+		g.handleFeed(senderId, message)
+	case *packets.Packet_Virus, *packets.Packet_VirusesBatch:
+		g.client.SocketSendAs(message, senderId)
+	case *packets.Packet_VirusConsumed:
+		g.handleVirusConsumed(senderId, message)
 	}
 }
 
@@ -210,6 +242,131 @@ func (g *InGame) handleDisconnect(senderId uint64, message *packets.Packet_Disco
 	}
 }
 
+// handleFeed throws a spore in the direction the player aimed. If a virus is in
+// the way, the virus takes the mass instead (see server.VirusFeed).
+func (g *InGame) handleFeed(senderId uint64, message *packets.Packet_Feed) {
+	if senderId != g.client.Id() {
+		return
+	}
+	if time.Since(g.lastFeed) < feedCooldown || g.player.Radius < feedMinRadius {
+		return
+	}
+	g.lastFeed = time.Now()
+
+	sporeMass := radToMass(feedSporeRadius)
+	g.player.Radius = g.nextRadius(-sporeMass)
+
+	dirX, dirY := math.Cos(message.Feed.Direction), math.Sin(message.Feed.Direction)
+	// Start just outside the blob so it doesn't land back inside it.
+	edge := g.player.Radius + feedSporeRadius + 2
+	fromX, fromY := g.player.X+dirX*edge, g.player.Y+dirY*edge
+	toX, toY := objects.ClampToMap(fromX+dirX*feedThrowDist, fromY+dirY*feedThrowDist, feedSporeRadius)
+
+	shared := g.client.SharedGameObjects()
+	if virusId, hit := firstVirusOnPath(shared.Viruses, fromX, fromY, toX, toY, feedSporeRadius); hit {
+		shared.FeedVirus(server.VirusFeed{VirusId: virusId, Mass: sporeMass, DirX: dirX, DirY: dirY})
+		return
+	}
+
+	spore := &objects.Spore{
+		X:         toX,
+		Y:         toY,
+		Radius:    feedSporeRadius,
+		DroppedBy: g.player,
+		DroppedAt: time.Now(),
+		Ejected:   true,
+		FromX:     fromX,
+		FromY:     fromY,
+		OwnerId:   g.client.Id(),
+		// Thrown into a wall it can land right next to the blob; don't let the
+		// thrower take it straight back.
+		LockFor: feedOwnerLockup,
+	}
+	sporeId := shared.Spores.Add(spore)
+	g.client.Broadcast(packets.NewSpore(sporeId, spore))
+	g.client.SocketSend(packets.NewSpore(sporeId, spore))
+}
+
+// firstVirusOnPath finds the virus a throw from (fromX, fromY) to (toX, toY)
+// runs into first, if any.
+func firstVirusOnPath(viruses *objects.SharedCollection[*objects.Virus], fromX, fromY, toX, toY, radius float64) (uint64, bool) {
+	segX, segY := toX-fromX, toY-fromY
+	segLenSq := segX*segX + segY*segY
+	bestId, bestT, found := uint64(0), math.Inf(1), false
+
+	viruses.ForEach(func(id uint64, v *objects.Virus) {
+		// Closest point on the throw to the virus's centre.
+		t := 0.0
+		if segLenSq > 0 {
+			t = min(max(((v.X-fromX)*segX+(v.Y-fromY)*segY)/segLenSq, 0), 1)
+		}
+		dx, dy := fromX+segX*t-v.X, fromY+segY*t-v.Y
+		reach := v.Radius + radius
+		if dx*dx+dy*dy <= reach*reach && t < bestT {
+			bestId, bestT, found = id, t, true
+		}
+	})
+	return bestId, found
+}
+
+func (g *InGame) handleVirusConsumed(senderId uint64, message *packets.Packet_VirusConsumed) {
+	g.client.SocketSendAs(message, senderId)
+	if message.VirusConsumed.PlayerId == g.client.Id() {
+		g.burst()
+	}
+}
+
+// burst is what a virus does to a blob: a share of its mass flies off as spores
+// in a ring around it, free for anyone nearby to eat. The blob itself has to
+// wait burstOwnerLockup before it can win them back.
+func (g *InGame) burst() {
+	mass := radToMass(g.player.Radius)
+	shed := mass * burstMassShare
+	count := int(min(max(math.Round(shed/burstSporeMass), burstMinSpores), burstMaxSpores))
+	sporeRadius := massToRad(shed / float64(count))
+
+	g.player.Radius = massToRad(mass - shed)
+	g.logger.Printf("Burst by a virus: shedding %.0f mass as %d spores", shed, count)
+
+	shared := g.client.SharedGameObjects()
+	batch := make(map[uint64]*objects.Spore, count)
+	start := rand.Float64() * 2 * math.Pi
+	for i := range count {
+		angle := start + 2*math.Pi*float64(i)/float64(count) + (rand.Float64()-0.5)*0.4
+		dist := g.player.Radius + sporeRadius + burstSpreadMin + rand.Float64()*(burstSpreadMax-burstSpreadMin)
+		x, y := objects.ClampToMap(g.player.X+math.Cos(angle)*dist, g.player.Y+math.Sin(angle)*dist, sporeRadius)
+		spore := &objects.Spore{
+			X:         x,
+			Y:         y,
+			Radius:    sporeRadius,
+			DroppedBy: g.player,
+			DroppedAt: time.Now(),
+			Ejected:   true,
+			FromX:     g.player.X,
+			FromY:     g.player.Y,
+			OwnerId:   g.client.Id(),
+			LockFor:   burstOwnerLockup,
+		}
+		batch[shared.Spores.Add(spore)] = spore
+	}
+
+	g.client.Broadcast(packets.NewSporesBatch(batch))
+	g.client.SocketSend(packets.NewSporesBatch(batch))
+	// The new size goes out with the next position update (20 a second), but a blob
+	// that isn't moving yet has no update loop, so send it now too.
+	update := packets.NewPlayer(g.client.Id(), g.player)
+	g.client.Broadcast(update)
+	g.client.SocketSend(update)
+}
+
+func (g *InGame) sendInitialViruses() {
+	viruses := make(map[uint64]*objects.Virus)
+	g.client.SharedGameObjects().Viruses.ForEach(func(id uint64, v *objects.Virus) {
+		viruses[id] = v
+	})
+	g.client.SocketSend(packets.NewVirusesBatch(viruses))
+}
+
 func (g *InGame) playerUpdateLoop(ctx context.Context) {
 	const delta float64 = 0.05
 	ticker := time.NewTicker(time.Duration(delta*1000) * time.Millisecond)
@@ -306,6 +463,7 @@ func (g *InGame) validatePlayerCloseToObject(objX, objY, objRadius, buffer float
 func (g *InGame) validatePlayerDropCooldown(spore *objects.Spore, buffer float64) error {
 	minAcceptableDistance := spore.Radius + g.player.Radius + buffer
 	minAcceptableTime := time.Duration(minAcceptableDistance/g.player.Speed*1000) * time.Millisecond
+	minAcceptableTime = max(minAcceptableTime, spore.LockFor)
 	if spore.DroppedBy == g.player && time.Since(spore.DroppedAt) < minAcceptableTime {
 		return fmt.Errorf("player dropped the spore too recently (time: %v, min acceptable time: %v)", time.Since(spore.DroppedAt), minAcceptableTime)
 	}

@@ -51,10 +51,15 @@ func NewPlayer(id uint64, player *objects.Player) Msg {
 
 func newSporeMessage(spore_id uint64, spore *objects.Spore) *SporeMessage {
 	return &SporeMessage{
-		Id:     spore_id,
-		X:      spore.X,
-		Y:      spore.Y,
-		Radius: spore.Radius,
+		Id:          spore_id,
+		X:           spore.X,
+		Y:           spore.Y,
+		Radius:      spore.Radius,
+		Ejected:     spore.Ejected,
+		FromX:       spore.FromX,
+		FromY:       spore.FromY,
+		OwnerId:     spore.OwnerId,
+		LockSeconds: spore.LockFor.Seconds(),
 	}
 }
 
@@ -65,7 +70,7 @@ func NewSpore(id uint64, spore *objects.Spore) Msg {
 }
 
 func NewSporesBatch(spores map[uint64]*objects.Spore) Msg {
-	sporesMessages := make([]*SporeMessage, len(spores))
+	sporesMessages := make([]*SporeMessage, 0, len(spores))
 	for id, spore := range spores {
 		sporesMessages = append(sporesMessages, newSporeMessage(id, spore))
 	}
@@ -89,6 +94,43 @@ func NewDisconnect(reason string) Msg {
 	return &Packet_Disconnect{
 		Disconnect: &DisconnectMessage{
 			Reason: reason,
+		},
+	}
+}
+
+func newVirusMessage(id uint64, virus *objects.Virus) *VirusMessage {
+	return &VirusMessage{
+		Id:     id,
+		X:      virus.X,
+		Y:      virus.Y,
+		Radius: virus.Radius,
+	}
+}
+
+func NewVirus(id uint64, virus *objects.Virus) Msg {
+	return &Packet_Virus{
+		Virus: newVirusMessage(id, virus),
+	}
+}
+
+func NewVirusesBatch(viruses map[uint64]*objects.Virus) Msg {
+	virusMessages := make([]*VirusMessage, 0, len(viruses))
+	for id, virus := range viruses {
+		virusMessages = append(virusMessages, newVirusMessage(id, virus))
+	}
+
+	return &Packet_VirusesBatch{
+		VirusesBatch: &VirusesBatchMessage{
+			Viruses: virusMessages,
+		},
+	}
+}
+
+func NewVirusConsumed(virusId, playerId uint64) Msg {
+	return &Packet_VirusConsumed{
+		VirusConsumed: &VirusConsumedMessage{
+			VirusId:  virusId,
+			PlayerId: playerId,
 		},
 	}
 }

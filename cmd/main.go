@@ -61,6 +61,9 @@ func coalescePaths(fallbacks ...string) string {
 
 func main() {
 	flag.Parse()
+	// Secrets like TURSO_AUTH_TOKEN go in .env.local, which git ignores (.env is
+	// committed). Neither file overrides variables already set, e.g. on the host.
+	_ = godotenv.Load(".env.local")
 	err := godotenv.Load(*configPath)
 	cfg := defaultConfig
 	if err != nil {

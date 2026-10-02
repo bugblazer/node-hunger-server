@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package packets;
+option go_package = "pkg/packets";
+
+message ChatMessage {
+  string msg = 1;
+}
+message IdMessage {
+  uint64 id = 1;
+}
+message LoginRequestMessage {
+  string username = 1;
+  string password = 2;
+}
+message RegisterRequestMessage {
+  string username = 1;
+  string password = 2;
+  int32 color = 3;
+}
+message OkResponseMessage {
+  //Leaving empty, since no message is needed in this case
+}
+message DenyResponseMessage {
+  string reason = 1;
+}
+message PlayerMessage {
+  uint64 id = 1;
+  string name = 2;
+  double x = 3;
+  double y = 4;
+  double radius = 5;
+  double direction = 6;
+  double speed = 7;
+  int32 color = 8;
+}
+message PlayerDirectionMessage {
+  double direction = 1;
+} //This is the player direction (can be any angle between 0 and 360 deg.
+  //It'll only be sent from the client so no need for any ID.)
+message SporeMessage {
+  uint64 id = 1;
+  double x = 2;
+  double y = 3;
+  double radius = 4;
+  // Set for spores thrown with W or burst out of a blob by a virus: the client
+  // animates them flying out from (from_x, from_y) to (x, y).
+  bool ejected = 5;
+  double from_x = 6;
+  double from_y = 7;
+  // The blob they came from, which can't eat them back for lock_seconds.
+  uint64 owner_id = 8;
+  double lock_seconds = 9;
+}
+message SporeConsumedMessage {
+  uint64 spore_id = 1;
+}
+message SporesBatchMessage {
+  repeated SporeMessage spores = 1;
+}
+message PlayerConsumedMessage {
+  uint64 player_id = 1;
+}
+message HiscoreBoardRequestMessage {
+
+}
+message HiscoreMessage {
+  uint64 rank = 1;
+  string name = 2;
+  uint64 score = 3;
+}
+message HiscoreBoardMessage {
+  repeated HiscoreMessage hiscores = 1;
+}
+message FinishedBrowsingHiscoresMessage {
+
+}
+message SearchHiscoreMessage {
+  string name = 1;
+}
+message DisconnectMessage {
+  string reason = 1;
+}
+// W: throw a bit of mass in this direction (radians, like PlayerDirectionMessage).
+message FeedMessage {
+  double direction = 1;
+}
+message VirusMessage {
+  uint64 id = 1;
+  double x = 2;
+  double y = 3;
+  double radius = 4;
+}
+message VirusesBatchMessage {
+  repeated VirusMessage viruses = 1;
+}
+// A virus burst a blob (player_id) and is gone.
+message VirusConsumedMessage {
+  uint64 virus_id = 1;
+  uint64 player_id = 2;
+}
+
+// Creating a wrapper named Packet that packs any message with the sender id
+message Packet {
+  uint64 sender_id = 1;
+  oneof msg {
+    ChatMessage chat = 2;
+    IdMessage id = 3;
+    LoginRequestMessage login_request = 4;
+    RegisterRequestMessage register_request = 5;
+    OkResponseMessage ok_response = 6;
+    DenyResponseMessage deny_response = 7;
+    PlayerMessage player = 8;
+    PlayerDirectionMessage player_direction = 9;
+    SporeMessage spore = 10;
+    SporeConsumedMessage spore_consumed = 11;
+    SporesBatchMessage spores_batch = 12;
+    PlayerConsumedMessage player_consumed = 13;
+    HiscoreBoardRequestMessage hiscore_board_request = 14;
+    HiscoreMessage hiscore = 15;
+    HiscoreBoardMessage hiscore_board = 16;
+    FinishedBrowsingHiscoresMessage finished_browsing_hiscores = 17;
+    SearchHiscoreMessage search_hiscore = 18;
+    DisconnectMessage disconnect = 19;
+    FeedMessage feed = 20;
+    VirusMessage virus = 21;
+    VirusesBatchMessage viruses_batch = 22;
+    VirusConsumedMessage virus_consumed = 23;
+  }
+}

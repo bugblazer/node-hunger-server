@@ -43,3 +43,17 @@ func TestRespawnKeepsColourAndAccount(t *testing.T) {
 		t.Fatalf("respawn should start fresh (position and size are set on enter): %+v", fresh)
 	}
 }
+
+func TestFirstVirusOnPathPicksTheNearestVirusInTheWay(t *testing.T) {
+	viruses := objects.NewSharedCollection[*objects.Virus]()
+	far := viruses.Add(&objects.Virus{X: 200, Y: 0, Radius: 50})
+	near := viruses.Add(&objects.Virus{X: 100, Y: 30, Radius: 50})
+	viruses.Add(&objects.Virus{X: 100, Y: 400, Radius: 50}) // off to the side
+
+	if id, hit := firstVirusOnPath(viruses, 0, 0, 300, 0, 10); !hit || id != near {
+		t.Fatalf("got virus %d (hit %v), want the nearer one %d (not %d)", id, hit, near, far)
+	}
+	if _, hit := firstVirusOnPath(viruses, 0, 0, -300, 0, 10); hit {
+		t.Fatal("a throw away from every virus hit one")
+	}
+}
