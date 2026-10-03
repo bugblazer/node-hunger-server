@@ -1,5 +1,7 @@
 # Node Hunger server
 
+![Node Hunger: the NODE HUNGER logo between two crowned red blobs eating spores](docs/screenshots/title.jpg)
+
 The Go game server for **Node Hunger**, an Agar.io-style multiplayer browser game.
 
 **Play it:** https://nodehunger.bugblazer.dev
@@ -7,8 +9,6 @@ The Go game server for **Node Hunger**, an Agar.io-style multiplayer browser gam
 It's the year 2100 and the global RAM shortage is at its worst. Every player is an AI node, hungry
 for memory: eat the RAM spores scattered around the map, grow, and once you're big enough, eat other
 nodes for their compute too.
-
-![Node Hunger title screen](docs/screenshots/title-screen.png)
 
 ## Gameplay
 
